@@ -1,0 +1,101 @@
+# Whole stack:  docker compose up --build        then open http://localhost:8080
+# First start downloads the open models (a few GB) - watch:  docker compose logs -f ollama-pull
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ace
+      POSTGRES_USER: ace
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ace_dev_password}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ace -d ace"]
+      interval: 5s
+      retries: 10
+
+  minio:                       # file storage
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-minioadmin}
+    ports: ["9002:9000", "9003:9001"]   # 9002 = S3 API, 9003 = web console
+    volumes: [miniodata:/data]
+
+  qdrant:                      # vector database for RAG
+    image: qdrant/qdrant:latest
+    ports: ["6333:6333"]
+    volumes: [qdrantdata:/qdrant/storage]
+
+  kafka:                       # "code.generated" events
+    image: apache/kafka:3.9.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+  ollama:                      # runs the open model
+    image: ollama/ollama:latest
+    ports: ["11434:11434"]
+    volumes: [ollama:/root/.ollama]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      retries: 20
+    # For an NVIDIA GPU add:  deploy: { resources: { reservations: { devices: [{ driver: nvidia, count: all, capabilities: [gpu] }] } } }
+
+  ollama-pull:                 # downloads the models once, then exits
+    image: ollama/ollama:latest
+    depends_on:
+      ollama: { condition: service_healthy }
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      MODEL: ${ACE_LLM_MODEL:-qwen2.5-coder:7b}
+    entrypoint: ["/bin/sh", "-c", "ollama pull $$MODEL && ollama pull nomic-embed-text"]
+    restart: "no"
+
+  backend:
+    build: .
+    depends_on:
+      postgres: { condition: service_healthy }
+      ollama: { condition: service_healthy }
+      minio: { condition: service_started }
+      qdrant: { condition: service_started }
+      kafka: { condition: service_started }
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/ace
+      DB_USERNAME: ace
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-ace_dev_password}
+      ACE_SECURITY_JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-dev-only-secret-change-me}
+      ACE_FRONTEND_URL: http://localhost:8080
+      ACE_LLM_BASE_URL: http://ollama:11434
+      ACE_LLM_MODEL: ${ACE_LLM_MODEL:-qwen2.5-coder:7b}
+      ACE_RAG_QDRANT_URL: http://qdrant:6333
+      ACE_STORAGE_TYPE: minio
+      ACE_STORAGE_MINIO_ENDPOINT: http://minio:9000
+      ACE_STORAGE_MINIO_PUBLIC_ENDPOINT: http://localhost:9002
+      ACE_STORAGE_MINIO_ACCESS_KEY: ${MINIO_USER:-minioadmin}
+      ACE_STORAGE_MINIO_SECRET_KEY: ${MINIO_PASSWORD:-minioadmin}
+      ACE_EVENTS_TYPE: kafka
+      ACE_EVENTS_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      ACE_EXECUTION_RUNNER: local            # use "kubernetes" when you deploy to a cluster (see README)
+      ACE_EXECUTION_LOCAL_PORT_START: 4100
+      ACE_EXECUTION_LOCAL_PORT_END: 4110
+      ACE_BILLING_DEV_MODE: "true"           # demo billing without Stripe
+    ports: ["4100-4110:4100-4110"]           # live previews of the generated apps
+    volumes: [acedata:/data]
+    restart: unless-stopped
+
+  frontend:                    # React app + nginx gateway
+    build: ./frontend
+    depends_on: [backend]
+    ports: ["8080:80"]
+
+volumes: { pgdata: {}, miniodata: {}, qdrantdata: {}, ollama: {}, acedata: {} }

@@ -1,0 +1,120 @@
+# =====================================================================
+#  Ace backend configuration
+#  Every value below can be overridden with an environment variable, e.g.
+#  ace.llm.model  ->  ACE_LLM_MODEL      ace.rag.enabled -> ACE_RAG_ENABLED
+# =====================================================================
+spring:
+  application:
+    name: Ace
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:9000/testDB}
+    username: ${DB_USERNAME:testUser}
+    password: ${DB_PASSWORD:password}
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: ${DDL_AUTO:update}   # TODO before real production: switch to Flyway migrations + "validate"
+    open-in-view: false
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+
+  threads:
+    virtual:
+      enabled: true          # Java 21 virtual threads: cheap blocking I/O for SSE streams
+
+server:
+  port: 8080
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+ace:
+  frontend-url: http://localhost:5173
+  cors:
+    allowed-origins: http://localhost:5173
+
+  security:
+    jwt-secret: change-me-change-me-change-me-change-me-please   # >= 32 chars. ALWAYS override in production
+    jwt-expiration-minutes: 1440
+
+  # ---- Open model served by Ollama (https://ollama.com) ----
+  llm:
+    base-url: http://localhost:11434
+    model: qwen2.5-coder:7b       # any Ollama model; bigger = better code (e.g. qwen3-coder:30b, gpt-oss:20b)
+    temperature: 0.2
+    num-ctx: 16384
+    num-predict: 8192
+    tools-enabled: true           # list_files / get_file_content tool calling (auto-disabled if model lacks it)
+    max-tool-rounds: 4
+    history-messages: 10          # "past 10 chat messages" from the architecture diagram
+
+  # ---- RAG: Qdrant vector DB (fails soft: if Qdrant is down the chat still works) ----
+  rag:
+    enabled: true
+    qdrant-url: http://localhost:6333
+    collection: ace_code
+    embedding-model: nomic-embed-text
+    vector-size: 768
+    top-k: 6
+    chunk-lines: 60
+    chunk-overlap: 10
+
+  # ---- File storage: "local" (dev, plain folder) or "minio" ----
+  storage:
+    type: local
+    local-root: ./data/projects
+    minio:
+      endpoint: http://localhost:9002
+      public-endpoint: http://localhost:9002     # URL pods use to download code (must be reachable from the cluster)
+      access-key: minioadmin
+      secret-key: minioadmin
+      bucket: ace-projects
+
+  # ---- "code.generated" event: "inprocess" (dev) or "kafka" ----
+  events:
+    type: inprocess
+    kafka:
+      bootstrap-servers: localhost:9092
+      topic: code.generated
+      group-id: ace-execution
+
+  # ---- Execution: "local" (npm process on this machine) or "kubernetes" (pod per project) ----
+  execution:
+    runner: local
+    auto-preview: true
+    startup-timeout-seconds: 240
+    local:
+      work-dir: ./data/previews
+      port-start: 4100
+      port-end: 4199
+      public-host: localhost
+    kubernetes:
+      kubectl: kubectl
+      namespace-prefix: ace-p-
+      preview-domain: preview.localtest.me      # *.localtest.me resolves to 127.0.0.1
+      scheme: http
+      ingress-class: nginx
+      node-image: node:22-alpine
+      cpu-limit: "1"
+      memory-limit: 1Gi
+
+  billing:
+    dev-mode: false               # true = "checkout" instantly activates the plan (no Stripe needed)
+    stripe:
+      secret-key: ""
+      webhook-secret: ""
+      price-pro: ""
+      price-team: ""

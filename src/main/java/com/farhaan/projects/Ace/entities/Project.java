@@ -1,0 +1,48 @@
+package com.farhaan.projects.Ace.entities;
+
+import jakarta.persistence.*;
+import lombok.*;
+import lombok.experimental.FieldDefaults;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
+
+import java.time.Instant;
+
+@Getter
+@Setter
+@FieldDefaults(level = AccessLevel.PRIVATE)
+@Entity
+@AllArgsConstructor
+@NoArgsConstructor
+@Builder
+@Table(name = "projects",
+indexes = {
+        @Index(name = "idx_projects_updated_at_desc", columnList = "updated_at DESC, deleted_at"),
+        @Index(name = "idx_project_deleted_at", columnList = "deleted_at")
+
+        //different indexes makes different queries faster (order of columnList also matters)
+})
+public class Project {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    Long id;
+
+    @Column(nullable = false)
+    String name;
+
+    @Builder.Default
+    Boolean isPublic = false;
+
+    // The user who created the project (also stored as an OWNER row in project_members)
+    @ManyToOne
+    @JoinColumn(name = "owner_id")
+    User owner;
+
+    @CreationTimestamp
+    Instant createdAt;
+
+    @UpdateTimestamp
+    Instant updatedAt;
+
+    Instant deletedAt;
+}
